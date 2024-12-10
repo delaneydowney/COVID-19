@@ -1,0 +1,273 @@
+---
+title: "Covid"
+author: "D. Downey"
+date: "2024-12-07"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r include = FALSE}
+library(tidyverse)
+```
+
+##I will start by reading in the data from the four main csv files.
+
+```{r get_jhu_data}
+## Get Current Data in the four files
+# they all begin the same way
+url_in <- 
+  "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+file_names <- 
+  c("time_series_covid19_confirmed_US.csv",
+                "time_series_covid19_confirmed_global.csv",
+                "time_series_covid19_deaths_US.csv",
+                "time_series_covid19_deaths_global.csv")
+urls <- stringr::str_c(url_in,file_names)
+
+urls
+```
+
+##Let's read in the data and see what we have.
+
+```{r import_data}
+global_cases <- read_csv(urls[2])
+global_deaths <- read_csv(urls[4])
+us_cases <- read_csv(urls[1])
+us_deaths <- read_csv(urls[3])
+
+global_cases
+```
+
+##Put each variable (date, cases, deaths) in their own column, and clean up data.
+
+```{r tidy_global_data}
+global_cases <- global_cases %>%
+  pivot_longer(cols = -c(`Province/State`,
+                         `Country/Region`, Lat, Long),
+               names_to = "date",
+               values_to = "cases") %>%
+  select(-c(Lat, Long))
+
+global_cases
+
+global_deaths <- global_deaths %>%
+  pivot_longer(cols = -c(`Province/State`,
+                         `Country/Region`, Lat, Long),
+               names_to = "date",
+               values_to = "deaths") %>%
+  select(-c(Lat, Long))
+
+library(lubridate)
+
+global <- global_cases %>%
+  full_join(global_deaths) %>%
+  rename(Country_Region = `Country/Region`,
+         Province_State = `Province/State`) %>%
+  mutate(date = mdy(date))
+
+global
+
+summary(global)
+
+global <- global %>% filter(cases > 0)
+
+global %>% filter(cases > 28000000)
+
+us_cases
+
+us_cases %>%
+  pivot_longer(cols = -(UID:Combined_Key),
+               names_to = "date",
+               values_to = "cases")
+
+us_cases <- us_cases %>%
+  pivot_longer(cols = -(UID:Combined_Key),
+               names_to = "date",
+               values_to = "cases") %>%
+  select(Admin2:cases) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(Lat, Long_))
+
+us_cases
+
+us_deaths <- us_deaths %>%
+  pivot_longer(cols = -(UID:Population),
+               names_to = "date",
+               values_to = "deaths") %>%
+  select(Admin2:deaths) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(Lat, Long_))
+
+us <- us_cases %>%
+  full_join(us_deaths)
+
+us
+
+global <- global %>%
+  unite("Combined_Key",
+        c(Province_State, Country_Region),
+        sep = ", ",
+        na.rm = TRUE,
+        remove = FALSE)
+
+global
+
+uid_lookup_url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+
+uid <- read_csv(uid_lookup_url) %>%
+  select(-c(Lat, Long_, Combined_Key, code3, iso2, iso3, Admin2))
+
+global <- global %>%
+  left_join(uid, by = c("Province_State", "Country_Region")) %>%
+  select(-c(UID, FIPS)) %>%
+  select(Province_State, Country_Region, date,
+         cases, deaths, Population,
+         Combined_Key)
+global
+
+us_by_state <- us %>%
+  group_by(Province_State, Country_Region, date) %>%
+  summarize(cases = sum(cases), deaths = sum(deaths),
+           Population = sum(Population)) %>%
+  mutate(deaths_per_mill = deaths *1000000 / Population) %>%
+  select(Province_State, Country_Region, date,
+         cases, deaths, deaths_per_mill, Population) %>%
+  ungroup()
+
+us_by_state
+
+us_totals <- us_by_state %>%
+  group_by(Country_Region, date) %>%
+  summarize(cases = sum(cases), deaths = sum(deaths),
+            Population = sum(Population)) %>%
+  mutate(deaths_per_mill = deaths *1000000 / Population) %>%
+  select(Country_Region, date,
+         cases, deaths, deaths_per_mill, Population) %>%
+  ungroup()
+
+us_totals
+
+tail(us_totals)
+
+##Create a graph of cases and deaths in the US.
+us_totals %>%
+  filter(cases>0) %>%
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(color = "cases")) +
+  geom_point(aes(color = "cases")) +
+  geom_line(aes(y = deaths, color = "deaths")) +
+  geom_point(aes(y = deaths, color = "deaths")) +
+  scale_y_log10() +
+  theme(legend.position="bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "COVID19 in US", y= NULL)
+
+##Create a graph of cases and deaths just in the state of Ohio.
+state <- "Ohio"
+us_by_state %>%
+  filter(Province_State == state) %>%
+  filter(cases > 0) %>%
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(color = "cases")) +
+  geom_point(aes(color = "cases")) +
+  geom_line(aes(y = deaths, color = "deaths")) +
+  geom_point(aes(y = deaths, color = "deaths")) +
+  scale_y_log10() +
+  theme(legend.position="bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = str_c("COVID19 in ", state), y= NULL)
+
+max(us_totals$date)
+
+max(us_totals$deaths)
+
+us_by_state <- us_by_state %>%
+  mutate(new_cases = cases - lag(cases),
+         new_deaths = deaths - log(deaths))
+
+us_totals <- us_totals %>%
+  mutate(new_cases = cases - lag(cases),
+         new_deaths = deaths - lag(deaths))
+
+tail(us_totals)
+
+tail(us_totals %>% select(new_cases, new_deaths, everything()))
+
+#Create a graph of just new cases and new deaths in the US
+us_totals %>%
+  ggplot(aes(x = date, y = new_cases)) +
+  geom_line(aes(color = "new_cases")) +
+  geom_point(aes(color = "new_cases")) +
+  geom_line(aes(y = new_deaths, color = "new_deaths")) +
+  geom_point(aes(y = new_deaths, color = "new_deaths")) +
+  scale_y_log10() +
+  theme(legend.position="bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "COVID19 in US", y= NULL)
+      
+#Create a graph of just new cases and new deaths in the state of Ohio 
+us_by_state %>%
+  filter(Province_State == state) %>%
+  ggplot(aes(x = date, y = new_cases)) +
+  geom_line(aes(color = "new_cases")) +
+  geom_point(aes(color = "new_cases")) +
+  geom_line(aes(y = new_deaths, color = "new_deaths")) +
+  geom_point(aes(y = new_deaths, color = "new_deaths")) +
+  scale_y_log10() +
+  theme(legend.position="bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = str_c("COVID19 in ", state), y= NULL)
+
+us_state_totals <- us_by_state %>%
+  group_by(Province_State) %>%
+  summarize(deaths = max(deaths), cases = max(cases),
+            population = max(Population),
+            cases_per_thou = 1000* cases / population,
+            deaths_per_thou = 1000 * deaths / population) %>%
+  filter(cases > 0, population > 0)
+
+us_state_totals %>%
+  slice_min(deaths_per_thou, n=10)
+
+us_state_totals %>%
+  slice_min(deaths_per_thou, n=10)
+
+us_state_totals %>%
+  slice_min(deaths_per_thou, n = 10) %>%
+  select(deaths_per_thou, cases_per_thou, everything())
+
+us_state_totals %>%
+  slice_max(deaths_per_thou, n = 10) %>%
+  select(deaths_per_thou, cases_per_thou, everything())
+
+mod <- lm(deaths_per_thou ~ cases_per_thou, data = us_state_totals)
+
+summary(mod)
+
+us_state_totals %>% slice_min(cases_per_thou)
+
+us_state_totals %>% slice_max(cases_per_thou)
+
+x_grid <- seq(1,51)
+  
+new_df <- tibble(cases_per_thou = x_grid)
+
+us_state_totals %>% mutate(pred = predict(mod))
+
+us_tot_w_pred <- us_state_totals %>% mutate(pred = predict(mod))
+
+us_tot_w_pred
+
+#Create a linear regression model of new cases and new deaths
+us_tot_w_pred %>% ggplot() +
+  geom_point(aes(x = cases_per_thou, y = deaths_per_thou), color = "blue") +
+  geom_point(aes(x = cases_per_thou, y = pred), color = "red")
+```
+
+## Bias and Analysis:
+While it seemes as if the number of total cases and deaths has seemed to plateau and level out over time, you can see that the number of new cases and new deaths has continued to increase. Cases in Ohio, seem to mirror a similar pattern to overall cases in the US, however, looking at new cases and new deaths specifically, in Ohio, the new deaths outnumber the new cases, but for the US there are more new cases than new deaths. This data, however, doesn't include any unreported cases, or outside factors and conditions of patients that could further explain the death rate. These graphs and models also only include data in which the number of cases reported was greater than 0, which could make it seem like the number of cases is increasing more than it really is since the days with 0 cases reported are not in there to balance out the results. It would be interesting to see the trends in other states and how the compare to the overall trend of the US as a whole.
